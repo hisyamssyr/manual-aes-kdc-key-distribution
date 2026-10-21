@@ -21,7 +21,7 @@
 
 ### 1.1 Config, Startup, dan Expected ID
 
-- Bob dijalankan dengan `python bob_client.py --config config.bob.json`; config memakai schema PRD Bagian 1 (`id`, `peer_id`, `listen`, `timeouts`, `logging`). `id` wajib `bob` untuk demo, `peer_id` wajib `alice`.
+- Bob dijalankan dengan `python bob_client.py --config config.bob.json`; config dimuat melalui `config.py` dan memakai schema PRD Bagian 1 (`id`, `peer_id`, `listen`, `timeouts`, `logging`). `id` wajib `bob` untuk demo, `peer_id` wajib `alice`.
 - `Kb` diminta saat startup memakai `getpass` (tidak echo, tidak disimpan ke disk). Key divalidasi dengan `validate_key`; jika invalid, ulangi maksimal 3 kali lalu exit code `2`.
 - Tiket wajib memiliki `ID_A == config["peer_id"]`. `T_B` tidak memuat `ID_B`; identitas Bob dijamin oleh `Kb`. ID yang tidak cocok menghasilkan `AUTH_FAIL BAD_FORMAT` setelah tiket berhasil didekripsi.
 - Port listen default `0.0.0.0:5001` dan socket memakai `SO_REUSEADDR` melalui `make_listener`.
@@ -106,6 +106,11 @@ Alice mengikuti aturan PRD Bagian 5 §2: jika koneksi ke Bob gagal **sebelum** t
 - `assert_transition(current: AliceState | BobState, event: str, allowed: dict) -> None`: memvalidasi transisi; event ilegal → `StateError`. Tidak ada transisi implisit di luar tabel.
 - `CLOSED` adalah state terminal sesi. Setelah cleanup selesai, session layer melakukan reset eksplisit ke `IDLE`/`LISTENING`; program tidak boleh menerima pesan aplikasi saat `CLOSED`.
 - Setiap transisi keluar dari `AUTHENTICATED` wajib menghentikan receiver thread, menutup socket, menghapus referensi `Ks`, `N1`, `N2`, dan tiket, serta mencatat event tanpa nilai rahasia.
+- `@dataclass SessionContext`: pemilik tunggal state sesi, `sock`, `send_lock`, `receiver_thread`, `close_event`, `ks`, `ticket`, `n1`, `n2`, riwayat maksimal 100 entri, antrean UI (`queue.Queue(maxsize=100)`), dan `unread_count`. Field rahasia di-reset ke `None` oleh `clear_secrets()`.
+- `start_receiver(context: SessionContext, on_message: Callable[[dict], None]) -> None`: membuat tepat satu receiver thread per sesi `AUTHENTICATED`; `on_message` tidak boleh memblokir dan wajib menangani antrean/riwayat milik context.
+- `stop_receiver(context: SessionContext, timeout: float = 2.0) -> None`: menghentikan receiver thread tanpa memanggil `recv` kedua dari thread pemanggil.
+- `close_session(context: SessionContext, send_bye: bool = True) -> None`: prosedur cleanup idempotent; menutup socket, menghentikan receiver, menghapus referensi `Ks`, `N1`, `N2`, dan tiket, lalu mereset state ke `IDLE`/`LISTENING`.
+- `alice_client.py` dan `bob_client.py` wajib memakai `SessionContext` serta helper di atas; keduanya tidak boleh membuat `send_lock`, receiver thread, atau cleanup sendiri.
 
 ### Key Hygiene dan Logging
 

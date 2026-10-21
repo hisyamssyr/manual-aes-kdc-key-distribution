@@ -1,0 +1,52 @@
+# Local configuration
+config.json
+config.*.json
+!config.*.example.json
+
+# Runtime logs
+logs/
+*.log
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+*.pyo
+.python-version
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+
+# Test and tooling artifacts
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+
+# Raw or unreviewed evidence
+docs/evidence/raw/
+*.pcap
+*.pcapng.tmp
+
+# Editor and OS artifacts
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*~
+*.bak
+*.tmp
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key

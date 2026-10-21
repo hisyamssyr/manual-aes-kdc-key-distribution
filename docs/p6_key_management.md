@@ -15,15 +15,15 @@
 ### 1.1 Receiver Thread, Queue, dan Riwayat Pesan
 
 - Satu receiver thread dibuat per sesi `AUTHENTICATED` dan hanya melakukan `recv_message` blocking (`timeout=None`). Thread dihentikan dengan `shutdown`/`close` dari thread lain saat `BYE`, error framing, atau shutdown; idle bukan error sesi. Tidak boleh ada dua receiver pada socket yang sama.
-- `APP_MSG` yang valid didekripsi dengan `open_app_msg(msg, ks, expected_from=peer_id)`, lalu dicatat ke riwayat in-memory maksimal 100 entri: `(timestamp, from, plaintext, ct_hex)`. Tidak ada key/nonce di riwayat.
+- `APP_MSG` yang valid didekripsi dengan `open_app_msg(msg, ks, expected_from=peer_id)`, lalu dicatat ke riwayat in-memory maksimal 100 entri: `(timestamp, from, plaintext, ct_hex)`. Tidak ada key/nonce di riwayat. Riwayat dan antrean UI dimiliki `SessionContext` (`session.py`), bukan variabel global.
 - Pesan juga dimasukkan ke `queue.Queue(maxsize=100)` untuk consumer UI. Jika queue penuh, receiver membuang entri terlama (get-nowait) lalu memasukkan entri baru; tidak boleh blocking selamanya.
 - Consumer UI berjalan di thread terpisah atau loop utama yang drain queue (tidak boleh memblokir receiver), mencetak pesan masuk, dan menaikkan `unread_count`. Menu “Lihat Pesan Masuk” menampilkan riwayat (maksimal 100) dan mereset `unread_count` ke 0. Dengan demikian pesan tetap “segera dicetak” sekaligus tersedia di menu.
 - Pesan dengan `from` tidak cocok, plaintext invalid, atau gagal didekripsi tidak dimasukkan ke riwayat dan tidak dicetak.
-- Setiap `APP_MSG` valid yang diterima juga dicatat ke audit log dengan arah masuk, `from`, plaintext, dan `ct_hex` lowercase; kegagalan didekripsi dicatat sebagai kode error tanpa plaintext.
+- Setiap `APP_MSG` valid yang diterima juga dicatat ke audit log melalui `app_logging.audit_app_message` dengan arah masuk, `from`, plaintext, dan `ct_hex` lowercase; kegagalan didekripsi dicatat sebagai kode error tanpa plaintext.
 
 ### 1.2 Sinkronisasi UI, Pengirim, dan Socket
 
-- Setiap socket sesi memiliki satu `send_lock`; seluruh pengiriman dari menu, receiver (misalnya `BYE`/`ERROR`), dan handshake memakai lock yang sama. Ini mencegah frame tercampur saat Alice dan Bob mengirim bersamaan.
+- Setiap socket sesi memiliki satu `send_lock` yang dimiliki `SessionContext` (`session.py`, PRD Bagian 5 §2); seluruh pengiriman dari menu, receiver (misalnya `BYE`/`ERROR`), dan handshake memakai lock yang sama. Ini mencegah frame tercampur saat Alice dan Bob mengirim bersamaan.
 - `ui.py` memiliki satu `output_lock` global per proses. Semua cetakan (info, error, pesan masuk, prompt) memakai lock ini.
 - Saat pengguna sedang mengetik, `ui.py` menyimpan teks prompt aktif. Pesan masuk dicetak dengan `\r\033[K` + pesan + baris baru + prompt + buffer input, lalu di-flush. Escape ANSI hanya dipakai jika `sys.stdout.isatty()` dan `sys.stdin.isatty()` bernilai benar.
 - Pada non-TTY (pipe/test), pesan masuk dicetak satu baris tanpa escape dan tanpa mencetak ulang prompt; UI tidak boleh crash atau menggandakan prompt.

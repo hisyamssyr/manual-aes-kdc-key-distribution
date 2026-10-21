@@ -29,12 +29,25 @@
 
 ### 1.3 Kontrak Antarmuka Modul (`K.5`)
 
+Kontrak berikut bersifat kanonik. Modul `config.py` dan `app_logging.py` adalah bagian dari struktur repositori dan tidak boleh digabung ke entrypoint.
+
 #### `encoding_utils.py`
 - `bytes_to_hex(b: bytes) -> str`: Mengembalikan string hex huruf kecil tanpa pemisah. `bytes_to_hex(b"") == ""`.
 - `hex_to_bytes(s: str) -> bytes`: Mengubah hex ke bytes. Menerima huruf besar maupun kecil, tetapi keluaran selalu lowercase. Lempar `ValueError` jika bukan hex valid atau panjang ganjil. String kosong menghasilkan `b""`.
 - `validate_key(s: str) -> bytes`: Validasi tepat 16 karakter ASCII printable (0x20-0x7E), tanpa trimming. Lempar `ValueError` dengan pesan jelas (tanpa menampilkan key) jika tidak valid. Key sesi yang dibangkitkan KDC memakai subset 0x21-0x7E.
 - `validate_plaintext(s: str) -> bytes`: Validasi ASCII printable (0x20-0x7E), panjang 1-1.024 karakter. Karakter kontrol, newline, dan karakter non-ASCII ditolak.
 - `validate_id(s: str) -> str`: Validasi ID 1-16 karakter regex `[A-Za-z0-9_-]`. ID bersifat case-sensitive dan tidak dinormalisasi.
+
+#### `config.py`
+- `load_config(path: str, role: str) -> dict`: Membaca JSON config per-role (`alice`, `bob`, `kdc`), menerapkan nilai default, memvalidasi field wajib, tipe, dan rentang sesuai §2.1, serta mengabaikan field asing dengan peringatan `WARNING`. Config yang dikembalikan tidak pernah memuat `Ka`, `Kb`, atau `Ks`.
+- `ConfigError`: exception dengan pesan ramah tanpa isi config; entrypoint menangkapnya, menulis pesan ke `stderr`, lalu keluar dengan exit code `2` tanpa stack trace.
+- `config.py` adalah satu-satunya modul yang membaca file config. Entrypoint dan modul lain hanya menerima `dict` yang sudah tervalidasi.
+
+#### `app_logging.py`
+- `configure_logging(role: str, log_file: str | None, level: str) -> logging.Logger`: Membuat direktori `logs/` bila perlu, membuka file log mode append dengan izin `0600`, memakai format satu baris §2.3, mem-flush setiap record, dan tidak menulis ke `stdout`/`stderr`.
+- `audit_app_message(logger: logging.Logger, direction: str, from_id: str, plaintext: str, ct_hex: str) -> None`: Satu-satunya jalur pencatatan event `APP_MSG`; tidak menerima key, nonce, atau KCV.
+- `RingBufferHandler(logging.Handler)`: Menyimpan maksimal 20 event terakhir di memori untuk menu KDC.
+- `app_logging.py` tidak membaca config dan tidak melakukan `input()`. Modul ini tidak boleh diberi nama `logging.py` agar tidak membayangi stdlib.
 
 #### `network.py`
 - `make_listener(host: str, port: int) -> socket.socket`: Membuat socket TCP `AF_INET`, menyalakan `SO_REUSEADDR`, melakukan `bind`, lalu `listen(backlog=16)`. Tidak memanggil `accept`. Lempar `NetworkError` dengan rincian host/port jika gagal.
@@ -91,6 +104,7 @@ Catatan: Berkas config.json tidak di-commit dan tidak boleh berisi Encryption Ke
 - Field asing diabaikan dengan peringatan `WARNING` di log; field wajib yang hilang, tipe salah, atau nilai di luar rentang menyebabkan proses keluar dengan pesan ramah ke `stderr` dan exit code `2`, tanpa stack trace dan tanpa mencetak isi config.
 - Config **tidak boleh** memuat `Ka`, `Kb`, atau `Ks`. Key dimasukkan interaktif memakai `getpass`: KDC meminta key untuk setiap ID pada `registry_ids` (dengan konfirmasi ulang), sedangkan Alice/Bob meminta key miliknya sendiri saat startup. Key tidak pernah ditulis ke disk, log, atau histori shell.
 - Setiap program dijalankan dengan `--config PATH` (default `config.json`); contoh: `python kdc_server.py --config config.kdc.json`, `python bob_client.py --config config.bob.json`, `python alice_client.py --config config.alice.json`.
+- Seluruh pembacaan dan validasi config dilakukan oleh `config.py`; entrypoint tidak boleh mem-parsing JSON config sendiri.
 
 ### 2.2 Framing Jaringan
 
@@ -104,6 +118,7 @@ Catatan: Berkas config.json tidak di-commit dan tidak boleh berisi Encryption Ke
 ### 2.3 Logging dan Redaksi Data Sensitif
 
 - **Tujuan log:** file log terpisah dari UI, agar output receiver thread tidak merusak prompt `input()`. Log tidak ditulis ke `stdout`/`stderr` setelah UI aktif; error fatal saat startup boleh ditulis ke `stderr`.
+- **Modul:** seluruh pembuatan file log, redaksi, audit `APP_MSG`, dan ring buffer event KDC berada di `app_logging.py`; modul lain tidak mengatur handler logging sendiri.
 - **Lokasi dan izin:** direktori `logs/` dibuat otomatis. File log memakai mode `0600`, ditambahkan (append), dan di-flush setiap record. `config.json`, direktori `logs/`, `__pycache__`, dan `*.pyc` tidak di-commit.
 - **Format:** satu record per baris, minimal berisi timestamp ISO-8601 UTC, level, role, event, dan field `key=value`. Nilai string di-escape (misalnya dengan `repr`/JSON string) agar newline tidak memecah record.
 - **Klasifikasi data:**
@@ -137,7 +152,7 @@ Catatan: Berkas config.json tidak di-commit dan tidak boleh berisi Encryption Ke
 | T1.3 | validate_key dengan 15, 16, 17 karakter dan non-ASCII | Hanya 16 karakter ASCII printable yang diterima |
 | T1.4 | validate_plaintext batas 0, 1, 1024, 1025 karakter | Menegakkan batas 1-1024 karakter ASCII printable |
 | T1.5 | validate_id dengan karakter spesial / >16 karakter | Ditolak |
-| T1.6 | Loader konfigurasi file tidak ada / JSON rusak / port invalid | Mengeluarkan pesan error ramah tanpa crash |
+| T1.6 | Loader konfigurasi (`config.py`) saat file tidak ada / JSON rusak / port invalid | Mengeluarkan pesan error ramah tanpa crash |
 | T1.7 | Framing jaringan loopback send & recv dict | Dict terintegrasi penuh |
 | T1.8 | Payload terpotong-potong (1 byte per read) | recv_message tetap membaca lengkap hingga utuh |
 | T1.9 | Dua pesan berurutan dalam satu segmen TCP | Terbaca terpisah dan presisi |
@@ -150,7 +165,7 @@ Catatan: Berkas config.json tidak di-commit dan tidak boleh berisi Encryption Ke
 | T1.16 | Header frame bernilai 0 | Lempar `BadFrame`; socket ditutup pemanggil |
 | T1.17 | `send_message` dengan payload > 65.536 byte | Lempar `FrameTooLarge` sebelum ada byte yang ditulis |
 | T1.18 | Timeout total saat frame baru terbaca sebagian | Lempar `NetworkTimeout`; tidak ada data parsial yang dikembalikan |
-| T1.19 | Config per-role valid / field wajib hilang / tipe salah | Config valid diterima; config invalid keluar dengan exit code `2` dan pesan ramah |
+| T1.19 | Config per-role (`config.py`) valid / field wajib hilang / tipe salah | Config valid diterima; config invalid keluar dengan exit code `2` dan pesan ramah |
 | T1.20 | Restart listener pada port yang sama | Bind ulang berhasil karena `SO_REUSEADDR` |
 
 **Prosedur T1.15:** setiap perangkat menjalankan echo server sementara pada port uji. Uji tiga pasangan (KDC↔Alice, KDC↔Bob, Alice↔Bob) dua arah dengan minimal satu pesan dict per arah, lalu catat IP/port dan hasilnya di `docs/evidence/README.md`. Bukti Wireshark mengikuti PRD Bagian 7.

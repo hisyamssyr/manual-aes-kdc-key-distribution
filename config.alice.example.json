@@ -1,0 +1,7 @@
+{
+  "id": "alice",
+  "kdc": {"host": "192.168.1.10", "port": 5000},
+  "bob": {"host": "192.168.1.12", "port": 5001},
+  "peer_id": "bob",
+  "timeouts": {"connect": 5.0, "step": 10.0}
+}

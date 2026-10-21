@@ -18,7 +18,7 @@ Analisis statis memakai `ast` dan `tokenize` dari stdlib, bukan pencocokan teks 
    - `config.*.example.json` tidak boleh memiliki field bernilai key atau string 16 karakter yang berfungsi sebagai key.
    - Pengecualian hanya untuk test vector di `tests/` dan literal 16 byte nol yang eksplisit (blok zero untuk KCV). Tidak ada pengecualian untuk kode produksi.
 3. **Kebersihan komentar, docstring, dan tipe:**
-   - `tokenize` menolak `TODO`, `FIXME`, `XXX`, komentar berisi kode yang dinonaktifkan, dan docstring multi-baris di modul produksi; docstring maksimal satu baris ringkas.
+   - `tokenize` menolak `TODO`, `FIXME`, `XXX`, komentar berisi kode yang dinonaktifkan, dan docstring multi-baris di modul produksi; docstring maksimal satu baris ringkas. Marker scaffold sementara wajib dihapus sebelum gerbang p7.
    - Setiap fungsi/metode produksi wajib memiliki type hint lengkap untuk parameter dan return value (dicek dengan `ast`).
    - Impor dikelompokkan dan diurutkan alfabetis; nama konstanta `UPPER_SNAKE_CASE`; panjang baris 88-100 karakter; dua baris kosong antar-fungsi/kelas.
    - Tidak ada komentar narasi langkah-demi-langkah. Komentar hanya boleh satu baris dan menjelaskan alasan non-obvious (“why”, bukan “how”). Pemeriksaan narasi tetap memerlukan review manual di T7.6.
@@ -27,7 +27,7 @@ Analisis statis memakai `ast` dan `tokenize` dari stdlib, bukan pencocokan teks 
    - Event `APP_MSG` wajib memuat plaintext dan hex ciphertext lowercase (sesuai T6.18), tetapi tidak boleh memuat key/nonce/KCV.
    - File log wajib mode `0600`; logging tidak boleh menulis ke `stdout` setelah UI aktif.
 5. **Larangan dependensi eksternal:**
-   - Repositori wajib berjalan dengan Python 3.10+ tanpa `pip install` paket pihak ketiga. `requirements.txt` tidak boleh mendeklarasikan dependensi runtime.
+   - Repositori wajib berjalan dengan Python 3.10+ tanpa `pip install` paket pihak ketiga. Tidak ada `requirements.txt`; jika file itu ditambahkan, isinya hanya boleh komentar/kosong dan tidak boleh mendeklarasikan paket runtime.
 
 ---
 
@@ -58,11 +58,13 @@ docs/evidence/
   app_alice_bob_YYYYMMDD-HHMMSS.pcapng
   app_bob_alice_YYYYMMDD-HHMMSS.pcapng
   screenshots/
+    .gitkeep
     demo-01-menu-kdc.png
     demo-02-auth-ok.png
     demo-03-app-msg.png
 ```
 
+- `.gitkeep` hanya menjaga direktori sebelum screenshot final tersedia; file ini bukan bukti.
 - **`docs/evidence/README.md` wajib berisi indeks:** ID test manual (T1.15/T4.15/T5.17/T6.19/T6.20), nama file, IP ketiga perangkat, tanggal/jam, interface capture, filter yang dipakai, penguji, dan hasil singkat.
 - **Setiap pcapng wajib** memuat handshake TCP lengkap untuk langkah terkait (bukan potongan frame), dapat dibuka di Wireshark, dan konsisten dengan tabel di atas. Sertakan catatan “Follow TCP Stream” untuk membuktikan `KDC_REQ` plaintext dan payload lain berupa hex.
 - **Screenshot** memakai PNG/JPG, tidak boleh menampilkan key, prompt `getpass`, isi `config.json`, atau terminal history. Screenshot boleh menampilkan ID, state, KCV, plaintext uji, dan hex ciphertext.
@@ -88,7 +90,7 @@ README wajib berbahasa Indonesia, menjadi dokumen utama teori/arsitektur/panduan
 10. Referensi Akademis (FIPS-197, NIST SP 800-38A).
 
 **Tambahan wajib di README:**
-- Struktur repositori dan tanggung jawab setiap modul (`encoding_utils`, `network`, `manual_aes`, `protocol`, `session`, `ui`, `kdc_server`, `alice_client`, `bob_client`, `tests`).
+- Struktur repositori dan tanggung jawab setiap modul (`config`, `app_logging`, `encoding_utils`, `network`, `manual_aes`, `protocol`, `session`, `ui`, `kdc_server`, `alice_client`, `bob_client`, `tests`).
 - Config contoh terpisah untuk KDC/Alice/Bob, cara mengisi IP di 3 perangkat, port yang harus dibuka, dan urutan startup.
 - Prosedur provisioning key awal (`Ka`, `Kb`) via `getpass` serta cara mencocokkan key antar-perangkat.
 - Perintah persis: `python -m unittest discover -s tests -v` dan cara menjalankan demo 3 perangkat.
@@ -117,7 +119,7 @@ README wajib berbahasa Indonesia, menjadi dokumen utama teori/arsitektur/panduan
 | T7.12 | Audit log runtime | Tidak ada key/nonce/KCV; APP_MSG mencatat plaintext + ct; mode file `0600` |
 | T7.13 | Shutdown KDC/Bob/Alice saat idle dan saat sesi aktif | Thread join ≤ 2 detik, socket tertutup, tidak ada FD/thread menggantung |
 | T7.14 | UI non-TTY (pipe) dan input invalid | Tidak ada escape ANSI, tidak crash, prompt tidak ganda |
-| T7.15 | Config per-role valid/invalid | Config valid diterima; invalid exit `2` tanpa stack trace/kebocoran |
+| T7.15 | Config per-role (`config.py`) valid/invalid | Config valid diterima; invalid exit `2` tanpa stack trace/kebocoran |
 | T7.16 | Cross-check KCV Alice vs Bob setelah autentikasi | 6 hex lowercase identik; `-` saat belum ada `Ks` |
 | T7.17 | Indeks `docs/evidence/README.md` | Semua test manual terpetakan ke file bukti yang ada |
 
@@ -127,6 +129,7 @@ README wajib berbahasa Indonesia, menjadi dokumen utama teori/arsitektur/panduan
 
 ```text
 .
+├── .gitignore
 ├── README.md
 ├── config.alice.example.json
 ├── config.bob.example.json
@@ -138,6 +141,9 @@ README wajib berbahasa Indonesia, menjadi dokumen utama teori/arsitektur/panduan
 │       ├── README.md
 │       ├── *.pcapng
 │       └── screenshots/
+│           └── .gitkeep
+├── config.py
+├── app_logging.py
 ├── encoding_utils.py
 ├── network.py
 ├── manual_aes.py
@@ -148,17 +154,32 @@ README wajib berbahasa Indonesia, menjadi dokumen utama teori/arsitektur/panduan
 ├── alice_client.py
 ├── bob_client.py
 ├── tests/
-│   ├── test_p1_network.py ... test_p7_integration.py
+│   ├── __init__.py
+│   ├── support.py
+│   ├── test_p1_encoding.py
+│   ├── test_p1_config.py
+│   ├── test_p1_network.py
+│   ├── test_p2_aes.py
+│   ├── test_p3_protocol.py
+│   ├── test_p4_kdc_alice.py
+│   ├── test_p5_bob_session.py
+│   ├── test_p6_messaging_ui.py
+│   ├── test_p7_integration.py
 │   ├── test_static_checks.py
 │   └── test_integration_loopback.py
 └── logs/                  # gitignored, dibuat saat runtime
 ```
 
+- `config.py` adalah satu-satunya modul yang membaca dan memvalidasi file config; `app_logging.py` adalah satu-satunya modul yang membuat handler file log, redaksi, audit `APP_MSG`, dan ring buffer event KDC.
+- `.gitignore` wajib memuat config lokal, `logs/`, cache Python, virtual environment, dan artefak tes; `config.*.example.json` serta `docs/evidence/` tetap di-commit.
+- `docs/evidence/screenshots/.gitkeep` hanya menjaga direktori; file screenshot final menggantikan placeholder ini.
+- **Peta tes:** `test_p1_encoding.py`, `test_p1_config.py`, dan `test_p1_network.py` memetakan T1.*; `test_p2_aes.py` T2.*; `test_p3_protocol.py` T3.*; `test_p4_kdc_alice.py` T4.*; `test_p5_bob_session.py` T5.*; `test_p6_messaging_ui.py` T6.*.
+- `test_integration_loopback.py` menjalankan happy-path end-to-end KDC/Alice/Bob dengan port ephemeral; `test_p7_integration.py` khusus fault injection, shutdown, stres, dan regresi lintas bagian (T7.2-T7.4, T7.13-T7.14).
 - **Perintah wajib:** `python -m unittest discover -s tests -v`; jalankan juga `python -m unittest tests.test_static_checks -v` secara terpisah di CI/lokal.
 - **Test loopback** wajib menjalankan KDC/Alice/Bob dalam proses terpisah atau thread dengan port ephemeral, sehingga suite tidak bergantung pada 3 perangkat fisik.
 - **Test seam:** test boleh memakai `unittest.mock` untuk mengganti `new_nonce`, `new_session_key`, `generate_iv`, dan waktu/timeout. `seal()` sudah menerima `iv` eksplisit untuk kasus deterministik. Tidak perlu menambahkan parameter test ke API produksi.
 - **Tidak ada dependensi runtime pihak ketiga.** Seluruh test memakai `unittest` dan stdlib.
-- File `config*.json` (selain `config.*.example.json`), `logs/`, `__pycache__/`, `*.pyc`, dan file sementara tidak boleh di-commit; `docs/evidence/` dan screenshot yang sudah diperiksa boleh di-commit.
+- File `config.json`, `config.alice.json`, `config.bob.json`, `config.kdc.json`, `logs/`, `__pycache__/`, `*.pyc`, dan file sementara tidak boleh di-commit; `docs/evidence/` dan screenshot yang sudah diperiksa boleh di-commit.
 
 ---
 

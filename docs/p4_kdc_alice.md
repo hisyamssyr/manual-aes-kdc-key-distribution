@@ -19,7 +19,7 @@
 
 ### 1.1 Startup, Config, dan Key Registry
 
-- KDC dijalankan dengan `python kdc_server.py --config config.kdc.json`. Config memakai schema PRD Bagian 1: `listen`, `registry_ids`, `timeouts`, dan `logging`.
+- KDC dijalankan dengan `python kdc_server.py --config config.kdc.json`. Config dimuat melalui `config.py` dan memakai schema PRD Bagian 1: `listen`, `registry_ids`, `timeouts`, dan `logging`.
 - `registry_ids` wajib berisi minimal satu ID valid dan unik. Untuk demo proyek, nilainya `["alice", "bob"]`. Duplikat, ID invalid, atau daftar kosong menyebabkan exit code `2`.
 - Saat startup, KDC meminta key untuk setiap ID pada `registry_ids` memakai `getpass` dua kali (input + konfirmasi). Key divalidasi dengan `validate_key`; jika tidak cocok/invalid, ulangi maksimal 3 kali lalu keluar dengan exit code `2`. Key tidak boleh berasal dari CLI argument, environment variable, atau config.
 - Registry disimpan hanya di memori sebagai `dict[str, bytes]` dan dilindungi `threading.RLock`. Lookup key mengambil snapshot di bawah lock; operasi kriptografi dilakukan setelah lock dilepas.
@@ -45,7 +45,7 @@
 ### 1.3 Menu, Status, dan Logging
 
 - Status KDC menampilkan: uptime, alamat bind, daftar ID terdaftar, jumlah request total/sukses/error, error per kode, dan jumlah koneksi aktif.
-- Menu “Lihat log aktivitas terakhir” menampilkan maksimal 20 event terakhir dari ring buffer in-memory (bukan membaca ulang seluruh file log).
+- Menu “Lihat log aktivitas terakhir” menampilkan maksimal 20 event terakhir dari ring buffer `app_logging.py` (bukan membaca ulang seluruh file log).
 - Event minimal yang dicatat: startup, listen, accept, hasil request (sukses/error code), perubahan key (hanya ID), dan shutdown. Tidak ada `Ka`, `Kb`, `Ks`, nonce, tiket ciphertext, atau plaintext aplikasi di log KDC.
 - Format, izin file, dan redaksi mengikuti PRD Bagian 1 §2.3.
 
@@ -53,7 +53,7 @@
 
 ## 2. Spesifikasi Alice Langkah 1-2 (`alice_client.py`)
 
-- **Startup/config:** dijalankan dengan `python alice_client.py --config config.alice.json`; `id` wajib `alice`, `peer_id` wajib `bob`. `Ka` diminta sekali saat startup memakai `getpass`, divalidasi `validate_key`, dan tidak disimpan ke disk; input invalid diulang maksimal 3 kali lalu exit code `2`. Config tidak boleh memuat key.
+- **Startup/config:** dijalankan dengan `python alice_client.py --config config.alice.json`; config dimuat melalui `config.py`, `id` wajib `alice`, `peer_id` wajib `bob`. `Ka` diminta sekali saat startup memakai `getpass`, divalidasi `validate_key`, dan tidak disimpan ke disk; input invalid diulang maksimal 3 kali lalu exit code `2`. Config tidak boleh memuat key.
 - **Fungsi Utama:** `request_session_key(config, ka) -> tuple[bytes, dict]`, dengan `config` yang sudah tervalidasi dan `ka: bytes` 16 karakter ASCII printable. Mengembalikan `(ks, ticket_envelope)` dan hanya boleh dipanggil saat state `IDLE` atau `KEY_READY`.
 - **Alur Kerja:**
   1. Transisi state dari `IDLE`/`KEY_READY` ke `REQUESTED` (tiket/`Ks` lama dibuang jika ada).
