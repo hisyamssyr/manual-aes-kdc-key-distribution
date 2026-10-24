@@ -6,6 +6,8 @@ import unittest
 
 from network import (
     BadFrame,
+    BadHeader,
+    BadPayload,
     ConnectionClosed,
     FrameTooLarge,
     MAX_PAYLOAD_SIZE,
@@ -68,11 +70,11 @@ class NetworkTests(unittest.TestCase):
         malformed_payload = b'{"a":1'
         duplicate_key_payload = b'{"a":1,"a":2}'
         cases: list[tuple[bytes, type[Exception]]] = [
-            (struct.pack("!I", 0), BadFrame),
+            (struct.pack("!I", 0), BadHeader),
             (struct.pack("!I", MAX_PAYLOAD_SIZE + 1), FrameTooLarge),
-            (struct.pack("!I", len(non_object_payload)) + non_object_payload, BadFrame),
-            (struct.pack("!I", len(malformed_payload)) + malformed_payload, BadFrame),
-            (struct.pack("!I", len(duplicate_key_payload)) + duplicate_key_payload, BadFrame),
+            (struct.pack("!I", len(non_object_payload)) + non_object_payload, BadPayload),
+            (struct.pack("!I", len(malformed_payload)) + malformed_payload, BadPayload),
+            (struct.pack("!I", len(duplicate_key_payload)) + duplicate_key_payload, BadPayload),
         ]
         for frame, exception_type in cases:
             with self.subTest(exception_type=exception_type.__name__):
@@ -132,6 +134,38 @@ class NetworkTests(unittest.TestCase):
             self.assertEqual(restarted_listener.getsockname()[1], port)
         finally:
             close_socket(restarted_listener)
+
+    def test_timeout_none_blocks_despite_existing_socket_timeout(self) -> None:
+        sender, receiver = socket.socketpair()
+        receiver.settimeout(0.05)
+        result: dict[str, object] = {}
+        started = threading.Event()
+
+        def receive() -> None:
+            started.set()
+            try:
+                result["message"] = recv_message(receiver, timeout=None)
+            except Exception as error:
+                result["error"] = error
+
+        reader = threading.Thread(target=receive)
+        reader.start()
+        try:
+            self.assertTrue(started.wait(1.0))
+            time.sleep(0.2)
+            self.assertTrue(reader.is_alive())
+            send_message(sender, {"v": 1, "type": "TEST"})
+        finally:
+            reader.join(timeout=1.0)
+            close_socket(sender)
+            close_socket(receiver)
+
+        self.assertNotIn("error", result)
+        self.assertEqual(result.get("message"), {"v": 1, "type": "TEST"})
+
+    def test_frame_error_subclasses_preserve_bad_frame_compatibility(self) -> None:
+        self.assertTrue(issubclass(BadHeader, BadFrame))
+        self.assertTrue(issubclass(BadPayload, BadFrame))
 
     def _send_one_byte_at_a_time(self, sock: socket.socket, data: bytes) -> None:
         for byte in data:

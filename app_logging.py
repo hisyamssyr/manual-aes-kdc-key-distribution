@@ -8,6 +8,8 @@ from pathlib import Path
 from typing import Any
 
 
+CONFIG_LOGGER_NAME = "config"
+CONFIG_WARNING_EVENT = "CONFIG_WARNING"
 DEFAULT_LOG_DIRECTORY = "logs"
 MAX_RING_BUFFER_EVENTS = 20
 STANDARD_RECORD_FIELDS = frozenset(logging.makeLogRecord({}).__dict__)
@@ -39,6 +41,30 @@ class RingBufferHandler(logging.Handler):
             self.handleError(record)
 
 
+class ConfigWarningCapture(logging.Handler):
+    def __init__(
+        self: "ConfigWarningCapture", logger: logging.Logger
+    ) -> None:
+        super().__init__(level=logging.WARNING)
+        self._logger = logger
+        self._records: list[logging.LogRecord] = []
+        self._records_lock = threading.Lock()
+
+    def emit(self: "ConfigWarningCapture", record: logging.LogRecord) -> None:
+        with self._records_lock:
+            self._records.append(record)
+
+    def drain(self: "ConfigWarningCapture") -> list[logging.LogRecord]:
+        with self._records_lock:
+            records = list(self._records)
+            self._records.clear()
+        return records
+
+    def detach(self: "ConfigWarningCapture") -> None:
+        self._logger.removeHandler(self)
+        self.close()
+
+
 def configure_logging(role: str, log_file: str | None, level: str) -> logging.Logger:
     if not isinstance(role, str) or not role:
         raise ValueError("role harus berupa string tidak kosong")
@@ -64,6 +90,34 @@ def configure_logging(role: str, log_file: str | None, level: str) -> logging.Lo
     handler.setFormatter(_EventFormatter(role))
     logger.addHandler(handler)
     return logger
+
+
+def capture_config_warnings(
+    logger_name: str = CONFIG_LOGGER_NAME,
+) -> ConfigWarningCapture:
+    if not isinstance(logger_name, str) or not logger_name:
+        raise ValueError("nama logger config tidak valid")
+    logger = logging.getLogger(logger_name)
+    handler = ConfigWarningCapture(logger)
+    logger.addHandler(handler)
+    return handler
+
+
+def flush_config_warnings(
+    handler: ConfigWarningCapture, logger: logging.Logger
+) -> None:
+    if not isinstance(handler, ConfigWarningCapture):
+        raise TypeError("handler harus ConfigWarningCapture")
+    if not isinstance(logger, logging.Logger):
+        raise TypeError("logger harus logging.Logger")
+    try:
+        for record in handler.drain():
+            logger.warning(
+                record.getMessage(),
+                extra={"event": CONFIG_WARNING_EVENT},
+            )
+    finally:
+        handler.detach()
 
 
 def audit_app_message(

@@ -27,6 +27,14 @@ class BadFrame(NetworkError):
     pass
 
 
+class BadHeader(BadFrame):
+    pass
+
+
+class BadPayload(BadFrame):
+    pass
+
+
 class NetworkTimeout(NetworkError):
     pass
 
@@ -90,13 +98,15 @@ def recv_message(sock: socket.socket, timeout: float | None = None) -> dict[str,
     ):
         raise ValueError("timeout penerimaan harus lebih besar dari nol")
 
-    deadline = time.monotonic() + float(timeout) if timeout is not None else None
     previous_timeout = sock.gettimeout()
+    if timeout is None:
+        sock.settimeout(None)
+    deadline = time.monotonic() + float(timeout) if timeout is not None else None
     try:
         header = _recv_exact(sock, HEADER_SIZE, deadline)
         payload_size = struct.unpack("!I", header)[0]
         if payload_size == 0:
-            raise BadFrame("header frame bernilai nol")
+            raise BadHeader("header frame bernilai nol")
         if payload_size > MAX_PAYLOAD_SIZE:
             raise FrameTooLarge("payload melebihi batas 65536 byte")
         payload = _recv_exact(sock, payload_size, deadline)
@@ -157,9 +167,9 @@ def _decode_payload(payload: bytes) -> dict[str, Any]:
             parse_constant=_reject_json_constant,
         )
     except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
-        raise BadFrame("payload JSON tidak valid") from error
+        raise BadPayload("payload JSON tidak valid") from error
     if not isinstance(parsed, dict):
-        raise BadFrame("payload JSON harus berupa objek")
+        raise BadPayload("payload JSON harus berupa objek")
     return parsed
 
 

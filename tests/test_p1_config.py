@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import stat
 import tempfile
@@ -6,7 +7,13 @@ import unittest
 from pathlib import Path
 from typing import Any
 
-from app_logging import RingBufferHandler, audit_app_message, configure_logging
+from app_logging import (
+    RingBufferHandler,
+    audit_app_message,
+    capture_config_warnings,
+    configure_logging,
+    flush_config_warnings,
+)
 from config import ConfigError, load_config
 
 
@@ -127,6 +134,35 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(len(handler.records), 2)
         self.assertIn("TWO", handler.records[0])
         self.assertIn("THREE", handler.records[1])
+
+    def test_config_warnings_can_be_flushed_to_role_log(self) -> None:
+        log_path = self._directory / "logs" / "alice.log"
+        logger = configure_logging("alice", str(log_path), "INFO")
+        capture = capture_config_warnings()
+        path = self._write_config(
+            "unknown-flush.json",
+            {
+                "id": "alice",
+                "peer_id": "bob",
+                "kdc": {"host": "127.0.0.1"},
+                "bob": {"host": "127.0.0.1"},
+                "unused": "value",
+            },
+        )
+
+        try:
+            loaded = load_config(path, "alice")
+        finally:
+            flush_config_warnings(capture, logger)
+
+        for handler in logger.handlers:
+            handler.flush()
+
+        content = log_path.read_text(encoding="utf-8")
+        self.assertNotIn("unused", loaded)
+        self.assertIn('event="CONFIG_WARNING"', content)
+        self.assertIn("ignoring unknown configuration field: unused", content)
+        self.assertNotIn(capture, logging.getLogger("config").handlers)
 
     def _write_config(self, filename: str, contents: dict[str, Any]) -> str:
         path = self._directory / filename
