@@ -135,6 +135,40 @@ class ConfigTests(unittest.TestCase):
         self.assertIn("TWO", handler.records[0])
         self.assertIn("THREE", handler.records[1])
 
+    def test_sensitive_fields_are_logged_only_for_app_messages(self) -> None:
+        log_path = self._directory / "logs" / "redaction.log"
+        logger = configure_logging("alice", str(log_path), "INFO")
+        logger.info(
+            "status update",
+            extra={
+                "event": "REQUEST",
+                "direction": "in",
+                "plaintext": "secret-plaintext",
+                "ct": "deadbeef",
+                "ticket": "ticket-value",
+                "body": "body-value",
+                "iv": "00112233445566778899aabbccddeeff",
+            },
+        )
+        audit_app_message(logger, "in", "bob", "hello", "A1B2")
+        for handler in logger.handlers:
+            handler.flush()
+
+        lines = log_path.read_text(encoding="utf-8").splitlines()
+
+        self.assertEqual(len(lines), 2)
+        self.assertIn('direction="in"', lines[0])
+        for sensitive_value in (
+            "secret-plaintext",
+            "deadbeef",
+            "ticket-value",
+            "body-value",
+            "00112233445566778899aabbccddeeff",
+        ):
+            self.assertNotIn(sensitive_value, lines[0])
+        self.assertIn('plaintext="hello"', lines[1])
+        self.assertIn('ct="a1b2"', lines[1])
+
     def test_config_warnings_can_be_flushed_to_role_log(self) -> None:
         log_path = self._directory / "logs" / "alice.log"
         logger = configure_logging("alice", str(log_path), "INFO")

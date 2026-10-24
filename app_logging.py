@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 
+APP_MESSAGE_EVENT = "APP_MSG"
 CONFIG_LOGGER_NAME = "config"
 CONFIG_WARNING_EVENT = "CONFIG_WARNING"
 DEFAULT_LOG_DIRECTORY = "logs"
@@ -15,6 +16,9 @@ MAX_RING_BUFFER_EVENTS = 20
 STANDARD_RECORD_FIELDS = frozenset(logging.makeLogRecord({}).__dict__)
 FORBIDDEN_LOG_FIELDS = frozenset(
     {"ka", "kb", "ks", "key", "kcv", "n1", "n2", "nonce"}
+)
+NON_AUDIT_SENSITIVE_FIELDS = frozenset(
+    {"plaintext", "ct", "ciphertext", "ticket", "body", "iv"}
 )
 
 
@@ -130,7 +134,7 @@ def audit_app_message(
     logger.info(
         "application message",
         extra={
-            "event": "APP_MSG",
+            "event": APP_MESSAGE_EVENT,
             "direction": direction,
             "from_id": from_id,
             "plaintext": plaintext,
@@ -148,7 +152,7 @@ class _EventFormatter(logging.Formatter):
         timestamp = datetime.fromtimestamp(record.created, timezone.utc).isoformat(
             timespec="milliseconds"
         ).replace("+00:00", "Z")
-        event = getattr(record, "event", "LOG")
+        event = str(getattr(record, "event", "LOG"))
         fields = {
             field_name: value
             for field_name, value in record.__dict__.items()
@@ -156,11 +160,17 @@ class _EventFormatter(logging.Formatter):
             and field_name != "event"
             and field_name.lower() not in FORBIDDEN_LOG_FIELDS
         }
+        if event != APP_MESSAGE_EVENT:
+            fields = {
+                field_name: value
+                for field_name, value in fields.items()
+                if field_name.lower() not in NON_AUDIT_SENSITIVE_FIELDS
+            }
         parts = [
             f"timestamp={timestamp}",
             f"level={record.levelname}",
             f"role={_quote(self._role)}",
-            f"event={_quote(str(event))}",
+            f"event={_quote(event)}",
             f"msg={_quote(record.getMessage())}",
         ]
         parts.extend(
