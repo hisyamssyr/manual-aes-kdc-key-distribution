@@ -18,7 +18,7 @@ class EncodingUtilsTests(unittest.TestCase):
         self.assertEqual(hex_to_bytes(""), b"")
 
     def test_invalid_hex_is_rejected(self) -> None:
-        for value in ("0", "abc", "gg", "00 0"):
+        for value in ("0", "abc", "gg", "00 0", "aa  bb"):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError):
                     hex_to_bytes(value)

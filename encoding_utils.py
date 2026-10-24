@@ -17,6 +17,8 @@ def hex_to_bytes(value: str) -> bytes:
         raise ValueError("hex value must be a string")
     if len(value) % 2 != 0:
         raise ValueError("hex value must have an even length")
+    if re.fullmatch(r"[0-9A-Fa-f]*", value) is None:
+        raise ValueError("hex value contains invalid characters")
     try:
         return bytes.fromhex(value)
     except ValueError as error:
