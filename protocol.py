@@ -151,7 +151,7 @@ def open_kdc_response(
     msg: dict[str, Any], ka: bytes, id_a: str, id_b: str, n1: bytes
 ) -> tuple[bytes, dict[str, str]]:
     parsed_message = parse_message(msg, "KDC_RESP")
-    _, _, normalized_ticket = _parse_envelope(parsed_message["ticket"])
+    ticket_envelope = parsed_message["ticket"]
     payload = unseal(ka, parsed_message["for_a"])
     ks, response_id_a, response_id_b, response_n1 = decode_r_a(payload)
     expected_id_a = _validate_id(id_a)
@@ -163,7 +163,7 @@ def open_kdc_response(
         raise ProtocolError("BAD_FORMAT")
     if not secrets.compare_digest(response_n1, expected_n1):
         raise ProtocolError("BAD_FORMAT")
-    return ks, normalized_ticket
+    return ks, ticket_envelope
 
 
 def open_ticket(ticket: dict[str, Any], kb: bytes, expected_id_a: str) -> tuple[bytes, str]:
@@ -185,6 +185,12 @@ def build_challenge(ks: bytes, n2: bytes) -> dict[str, Any]:
         "type": "CHALLENGE",
         "body": seal(_validate_session_key(ks), _validate_nonce(n2)),
     }
+
+
+def open_challenge(ks: bytes, msg: dict[str, Any]) -> bytes:
+    parsed_message = parse_message(msg, "CHALLENGE")
+    nonce = unseal(_validate_session_key(ks), parsed_message["body"])
+    return _validate_nonce(nonce)
 
 
 def build_challenge_response(ks: bytes, n2: bytes) -> dict[str, Any]:

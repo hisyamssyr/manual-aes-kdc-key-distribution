@@ -25,6 +25,7 @@ from protocol import (
     new_nonce,
     new_session_key,
     open_app_msg,
+    open_challenge,
     open_kdc_response,
     open_ticket,
     parse_kdc_request,
@@ -118,6 +119,28 @@ class ProtocolTests(unittest.TestCase):
         self.assertEqual(open_ticket(ticket, self.KB, "alice"), (self.KS, "alice"))
         self.assertEqual(build_ticket(ticket)["ticket"], ticket)
 
+    def test_open_kdc_response_preserves_validated_ticket_envelope(self) -> None:
+        response = build_kdc_response(self.KA, self.KB, self.KS, "alice", "bob", self.N1)
+        uppercase_response = {
+            **response,
+            "for_a": {
+                "iv": response["for_a"]["iv"].upper(),
+                "ct": response["for_a"]["ct"].upper(),
+            },
+            "ticket": {
+                "iv": response["ticket"]["iv"].upper(),
+                "ct": response["ticket"]["ct"].upper(),
+            },
+        }
+
+        opened_ks, ticket = open_kdc_response(
+            uppercase_response, self.KA, "alice", "bob", self.N1
+        )
+
+        self.assertEqual(opened_ks, self.KS)
+        self.assertEqual(ticket, uppercase_response["ticket"])
+        self.assertEqual(open_ticket(ticket, self.KB, "alice"), (self.KS, "alice"))
+
     def test_kdc_response_rejects_wrong_nonce_or_ticket_identity(self) -> None:
         response = build_kdc_response(self.KA, self.KB, self.KS, "alice", "bob", self.N1)
         with self.assertRaises(ProtocolError) as captured:
@@ -127,6 +150,24 @@ class ProtocolTests(unittest.TestCase):
         ticket = seal(self.KB, encode_t_b(self.KS, "mallory"), iv=self.IV)
         with self.assertRaises(ProtocolError) as captured:
             open_ticket(ticket, self.KB, "alice")
+        self.assertEqual(captured.exception.code, "BAD_FORMAT")
+
+    def test_open_challenge_returns_validated_nonce(self) -> None:
+        challenge = build_challenge(self.KS, self.N2)
+
+        self.assertEqual(open_challenge(self.KS, challenge), self.N2)
+
+        malformed_length = {
+            "v": 1,
+            "type": "CHALLENGE",
+            "body": seal(self.KS, b"short", iv=self.IV),
+        }
+        with self.assertRaises(ProtocolError) as captured:
+            open_challenge(self.KS, malformed_length)
+        self.assertEqual(captured.exception.code, "BAD_FORMAT")
+
+        with self.assertRaises(ProtocolError) as captured:
+            open_challenge(self.KS, build_auth_ok())
         self.assertEqual(captured.exception.code, "BAD_FORMAT")
 
     def test_challenge_response_success_and_wrong_response(self) -> None:
