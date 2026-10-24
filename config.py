@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 from typing import Any
 
 from encoding_utils import validate_id
@@ -10,6 +11,8 @@ DEFAULT_KDC_PORT = 5000
 DEFAULT_BOB_PORT = 5001
 DEFAULT_STEP_TIMEOUT = 10.0
 DEFAULT_LOG_LEVEL = "INFO"
+ALICE_ID = "alice"
+BOB_ID = "bob"
 LOGGER = logging.getLogger(__name__)
 ROLES = frozenset({"alice", "bob", "kdc"})
 LOG_LEVELS = frozenset({"DEBUG", "INFO", "WARNING", "ERROR"})
@@ -46,6 +49,8 @@ def _read_json_object(path: str) -> dict[str, Any]:
         raise ConfigError("berkas konfigurasi tidak dapat dibaca") from error
     except OSError as error:
         raise ConfigError("berkas konfigurasi tidak dapat dibuka") from error
+    except UnicodeDecodeError as error:
+        raise ConfigError("encoding berkas konfigurasi tidak valid") from error
     except json.JSONDecodeError as error:
         raise ConfigError("format JSON konfigurasi tidak valid") from error
 
@@ -56,7 +61,11 @@ def _read_json_object(path: str) -> dict[str, Any]:
 
 def _load_alice_config(raw_config: dict[str, Any]) -> dict[str, Any]:
     identity = _require_id(raw_config, "id")
+    if identity != ALICE_ID:
+        raise ConfigError("field 'id' untuk peran alice harus 'alice'")
     peer_id = _require_id(raw_config, "peer_id")
+    if peer_id != BOB_ID:
+        raise ConfigError("field 'peer_id' untuk peran alice harus 'bob'")
     kdc = _load_endpoint(raw_config, "kdc", DEFAULT_KDC_PORT)
     bob = _load_endpoint(raw_config, "bob", DEFAULT_BOB_PORT)
     timeouts = _load_timeouts(raw_config)
@@ -73,7 +82,11 @@ def _load_alice_config(raw_config: dict[str, Any]) -> dict[str, Any]:
 
 def _load_bob_config(raw_config: dict[str, Any]) -> dict[str, Any]:
     identity = _require_id(raw_config, "id")
+    if identity != BOB_ID:
+        raise ConfigError("field 'id' untuk peran bob harus 'bob'")
     peer_id = _require_id(raw_config, "peer_id")
+    if peer_id != ALICE_ID:
+        raise ConfigError("field 'peer_id' untuk peran bob harus 'alice'")
     listener = _load_endpoint(raw_config, "listen", DEFAULT_BOB_PORT)
     timeouts = _load_timeouts(raw_config)
     logging_config = _load_logging(raw_config, identity)
@@ -169,7 +182,12 @@ def _load_timeouts(raw_config: dict[str, Any]) -> dict[str, float]:
 
 
 def _validate_timeout(value: Any, field_name: str) -> float:
-    if isinstance(value, bool) or not isinstance(value, float) or value <= 0:
+    if (
+        isinstance(value, bool)
+        or not isinstance(value, float)
+        or not math.isfinite(value)
+        or value <= 0
+    ):
         raise ConfigError(f"field '{field_name}' harus float lebih besar dari nol")
     return value
 

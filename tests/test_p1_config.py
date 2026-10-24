@@ -89,6 +89,55 @@ class ConfigTests(unittest.TestCase):
                 with self.assertRaises(ConfigError):
                     load_config(path, "alice")
 
+    def test_role_specific_ids_are_enforced(self) -> None:
+        alice_config = {
+            "id": "alice",
+            "peer_id": "bob",
+            "kdc": {"host": "127.0.0.1"},
+            "bob": {"host": "127.0.0.1"},
+        }
+        bob_config = {
+            "id": "bob",
+            "peer_id": "alice",
+            "listen": {"host": "0.0.0.0"},
+        }
+        invalid_configs = (
+            ("alice", {**alice_config, "id": "eve"}),
+            ("alice", {**alice_config, "peer_id": "mallory"}),
+            ("bob", {**bob_config, "id": "alice"}),
+            ("bob", {**bob_config, "peer_id": "bob"}),
+        )
+
+        for index, (role, config) in enumerate(invalid_configs):
+            with self.subTest(role=role, config=index):
+                path = self._write_config(f"invalid-role-id-{index}.json", config)
+                with self.assertRaises(ConfigError):
+                    load_config(path, role)
+
+    def test_non_finite_timeouts_and_invalid_encoding_are_rejected(self) -> None:
+        base_config = {
+            "id": "alice",
+            "peer_id": "bob",
+            "kdc": {"host": "127.0.0.1"},
+            "bob": {"host": "127.0.0.1"},
+        }
+        for index, value in enumerate((float("nan"), float("inf"), float("-inf"))):
+            path = self._write_config(
+                f"invalid-timeout-{index}.json",
+                {**base_config, "timeouts": {"step": value}},
+            )
+            with self.subTest(value=value):
+                with self.assertRaises(ConfigError):
+                    load_config(path, "alice")
+
+        invalid_encoding_path = self._directory / "invalid-encoding.json"
+        invalid_encoding_path.write_bytes(
+            b'{"id":"alice","peer_id":"bob","kdc":{"host":"127.0.0.1"},'
+            b'"bob":{"host":"127.0.0.1"},"unused":"\xff"}'
+        )
+        with self.assertRaises(ConfigError):
+            load_config(str(invalid_encoding_path), "alice")
+
     def test_unknown_fields_are_ignored_with_a_warning(self) -> None:
         path = self._write_config(
             "unknown.json",
