@@ -1,5 +1,6 @@
 import errno
 import json
+import math
 import socket
 import struct
 import time
@@ -54,12 +55,11 @@ def make_listener(host: str, port: int) -> socket.socket:
 
 
 def connect(host: str, port: int, timeout: float) -> socket.socket:
-    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0:
-        raise ValueError("timeout koneksi harus lebih besar dari nol")
+    connection_timeout = _validate_timeout(timeout, "timeout koneksi")
     connection: socket.socket | None = None
     try:
         connection = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        connection.settimeout(float(timeout))
+        connection.settimeout(connection_timeout)
         connection.connect((host, port))
         return connection
     except OSError as error:
@@ -93,15 +93,16 @@ def send_message(sock: socket.socket, obj: dict[str, Any]) -> None:
 
 
 def recv_message(sock: socket.socket, timeout: float | None = None) -> dict[str, Any]:
-    if timeout is not None and (
-        isinstance(timeout, bool) or not isinstance(timeout, (int, float)) or timeout <= 0
-    ):
-        raise ValueError("timeout penerimaan harus lebih besar dari nol")
+    receive_timeout = (
+        None if timeout is None else _validate_timeout(timeout, "timeout penerimaan")
+    )
 
     previous_timeout = sock.gettimeout()
-    if timeout is None:
+    if receive_timeout is None:
         sock.settimeout(None)
-    deadline = time.monotonic() + float(timeout) if timeout is not None else None
+    deadline = (
+        time.monotonic() + receive_timeout if receive_timeout is not None else None
+    )
     try:
         header = _recv_exact(sock, HEADER_SIZE, deadline)
         payload_size = struct.unpack("!I", header)[0]
@@ -147,6 +148,18 @@ def _recv_exact(sock: socket.socket, size: int, deadline: float | None) -> bytes
             raise ConnectionClosed("koneksi ditutup saat menerima")
         received.extend(chunk)
     return bytes(received)
+
+
+def _validate_timeout(timeout: Any, label: str) -> float:
+    if isinstance(timeout, bool) or not isinstance(timeout, (int, float)):
+        raise ValueError(f"{label} harus lebih besar dari nol")
+    try:
+        value = float(timeout)
+    except (OverflowError, ValueError) as error:
+        raise ValueError(f"{label} harus lebih besar dari nol") from error
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{label} harus lebih besar dari nol")
+    return value
 
 
 def _apply_receive_timeout(sock: socket.socket, deadline: float | None) -> None:

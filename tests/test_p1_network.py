@@ -135,6 +135,19 @@ class NetworkTests(unittest.TestCase):
         finally:
             close_socket(restarted_listener)
 
+    def test_non_finite_timeouts_are_rejected(self) -> None:
+        for timeout in (float("nan"), float("inf"), float("-inf")):
+            with self.subTest(timeout=timeout):
+                with self.assertRaises(ValueError):
+                    connect("127.0.0.1", 1, timeout)
+                sender, receiver = socket.socketpair()
+                try:
+                    with self.assertRaises(ValueError):
+                        recv_message(receiver, timeout=timeout)
+                finally:
+                    close_socket(sender)
+                    close_socket(receiver)
+
     def test_timeout_none_blocks_despite_existing_socket_timeout(self) -> None:
         sender, receiver = socket.socketpair()
         receiver.settimeout(0.05)
