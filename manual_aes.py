@@ -10,6 +10,60 @@ class AESError(Exception):
     pass
 
 
+def _rotate_left(value: int, shift: int) -> int:
+    return ((value << shift) | (value >> (8 - shift))) & 0xFF
+
+
+def _gf_multiply(first: int, second: int) -> int:
+    product = 0
+    multiplicand = first
+    multiplier = second
+    for _ in range(8):
+        if multiplier & 1:
+            product ^= multiplicand
+        high_bit_set = multiplicand & 0x80
+        multiplicand = (multiplicand << 1) & 0xFF
+        if high_bit_set:
+            multiplicand ^= 0x1B
+        multiplier >>= 1
+    return product
+
+
+def _gf_power(value: int, exponent: int) -> int:
+    result = 1
+    factor = value
+    remaining_exponent = exponent
+    while remaining_exponent:
+        if remaining_exponent & 1:
+            result = _gf_multiply(result, factor)
+        factor = _gf_multiply(factor, factor)
+        remaining_exponent >>= 1
+    return result
+
+
+def _multiplicative_inverse(value: int) -> int:
+    if value == 0:
+        return 0
+    return _gf_power(value, 254)
+
+
+def _generate_s_boxes() -> tuple[tuple[int, ...], tuple[int, ...]]:
+    s_box_values: list[int] = []
+    inverse_s_box_values = [0] * 256
+    for value in range(256):
+        inverse = _multiplicative_inverse(value)
+        substituted = inverse ^ _rotate_left(inverse, 1) ^ _rotate_left(inverse, 2)
+        substituted ^= _rotate_left(inverse, 3) ^ _rotate_left(inverse, 4) ^ 0x63
+        s_box_values.append(substituted)
+        inverse_s_box_values[substituted] = value
+    return tuple(s_box_values), tuple(inverse_s_box_values)
+
+
+S_BOX, INV_S_BOX = _generate_s_boxes()
+if S_BOX[0x00] != 0x63 or S_BOX[0x53] != 0xED:
+    raise AESError("invalid AES substitution tables")
+
+
 def encrypt_block(key: bytes, block: bytes) -> bytes:
     _validate_block(block)
     round_keys = _expand_key(key)
@@ -111,55 +165,6 @@ def mix_columns(block: bytes) -> bytes:
 def inv_mix_columns(block: bytes) -> bytes:
     _validate_block(block)
     return bytes(_inverse_mix_columns(list(block)))
-
-
-def _generate_s_boxes() -> tuple[tuple[int, ...], tuple[int, ...]]:
-    s_box_values: list[int] = []
-    inverse_s_box_values = [0] * 256
-    for value in range(256):
-        inverse = _multiplicative_inverse(value)
-        substituted = inverse ^ _rotate_left(inverse, 1) ^ _rotate_left(inverse, 2)
-        substituted ^= _rotate_left(inverse, 3) ^ _rotate_left(inverse, 4) ^ 0x63
-        s_box_values.append(substituted)
-        inverse_s_box_values[substituted] = value
-    return tuple(s_box_values), tuple(inverse_s_box_values)
-
-
-def _multiplicative_inverse(value: int) -> int:
-    if value == 0:
-        return 0
-    return _gf_power(value, 254)
-
-
-def _gf_power(value: int, exponent: int) -> int:
-    result = 1
-    factor = value
-    remaining_exponent = exponent
-    while remaining_exponent:
-        if remaining_exponent & 1:
-            result = _gf_multiply(result, factor)
-        factor = _gf_multiply(factor, factor)
-        remaining_exponent >>= 1
-    return result
-
-
-def _gf_multiply(first: int, second: int) -> int:
-    product = 0
-    multiplicand = first
-    multiplier = second
-    for _ in range(8):
-        if multiplier & 1:
-            product ^= multiplicand
-        high_bit_set = multiplicand & 0x80
-        multiplicand = (multiplicand << 1) & 0xFF
-        if high_bit_set:
-            multiplicand ^= 0x1B
-        multiplier >>= 1
-    return product
-
-
-def _rotate_left(value: int, shift: int) -> int:
-    return ((value << shift) | (value >> (8 - shift))) & 0xFF
 
 
 def _expand_key(key: bytes) -> tuple[bytes, ...]:
@@ -291,8 +296,3 @@ def _validate_block(block: bytes) -> None:
 def _require_bytes(value: bytes) -> None:
     if not isinstance(value, bytes):
         raise TypeError("AES inputs must be bytes")
-
-
-S_BOX, INV_S_BOX = _generate_s_boxes()
-if S_BOX[0x00] != 0x63 or S_BOX[0x53] != 0xED:
-    raise AESError("invalid AES substitution tables")
