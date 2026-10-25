@@ -101,16 +101,16 @@ Alice mengikuti aturan PRD Bagian 5 §2: jika koneksi ke Bob gagal **sebelum** t
 
 ### API `session.py`
 
-- `class StateError(Exception)`: dilempar untuk event yang tidak legal pada state saat ini. T5.14 menguji transisi ilegal dan memastikan exception ini muncul.
+- `class StateError(Exception)`: dilempar untuk event atau transisi yang tidak legal pada state saat ini. T5.14 menguji transisi ilegal dan memastikan exception ini muncul.
 - `AliceState` dan `BobState` adalah `enum.Enum` dengan nilai persis seperti daftar di atas.
-- `assert_transition(current: AliceState | BobState, event: str, allowed: dict) -> None`: memvalidasi transisi; event ilegal → `StateError`. Tidak ada transisi implisit di luar tabel.
+- `assert_bob_transition(current: BobState, target: BobState) -> None` dan `assert_alice_transition(current: AliceState, target: AliceState) -> None`: memvalidasi transisi state secara deterministik; transisi ilegal → `StateError`.
 - `CLOSED` adalah state terminal sesi. Setelah cleanup selesai, session layer melakukan reset eksplisit ke `IDLE`/`LISTENING`; program tidak boleh menerima pesan aplikasi saat `CLOSED`.
 - Setiap transisi keluar dari `AUTHENTICATED` wajib menghentikan receiver thread, menutup socket, menghapus referensi `Ks`, `N1`, `N2`, dan tiket, serta mencatat event tanpa nilai rahasia.
-- `@dataclass SessionContext`: pemilik tunggal state sesi, `sock`, `send_lock`, `receiver_thread`, `close_event`, `ks`, `ticket`, `n1`, `n2`, riwayat maksimal 100 entri, antrean UI (`queue.Queue(maxsize=100)`), dan `unread_count`. Field rahasia di-reset ke `None` oleh `clear_secrets()`.
-- `start_receiver(context: SessionContext, on_message: Callable[[dict], None]) -> None`: membuat tepat satu receiver thread per sesi `AUTHENTICATED`; `on_message` tidak boleh memblokir dan wajib menangani antrean/riwayat milik context.
-- `stop_receiver(context: SessionContext, timeout: float = 2.0) -> None`: menghentikan receiver thread tanpa memanggil `recv` kedua dari thread pemanggil.
-- `close_session(context: SessionContext, send_bye: bool = True) -> None`: prosedur cleanup idempotent; menutup socket, menghentikan receiver, menghapus referensi `Ks`, `N1`, `N2`, dan tiket, lalu mereset state ke `IDLE`/`LISTENING`.
-- `alice_client.py` dan `bob_client.py` wajib memakai `SessionContext` serta helper di atas; keduanya tidak boleh membuat `send_lock`, receiver thread, atau cleanup sendiri.
+- `@dataclass AliceSession` dan `@dataclass BobSession`: entitas sesi modular per peran (menerapkan Single Responsibility & Interface Segregation). Masing-masing mengelola state, `client_sock`, `send_lock`, `close_event`, `message_history` (maksimal 100 entri), `unread_count`, serta data kriptografis peran terkait (`ks`, `ticket`, `last_n1` pada Alice; `ks`, `n2` pada Bob).
+- `clear_secrets()`: method pada setiap kelas sesi untuk mereset seluruh referensi rahasia (`ks`, `ticket`, `last_n1`, `n2`) ke `None` saat sesi direset atau ditutup.
+- `run_session_receiver(session, peer_id, on_message, on_close, logger)`: loop receiver blocking thread-safe untuk membaca `APP_MSG`, `BYE`, dan `ERROR` pada sesi `AUTHENTICATED`.
+- `close_session(session: AliceSession | BobSession, send_bye: bool = True, timeout: float = CLOSE_SESSION_TIMEOUT) -> None`: prosedur cleanup idempotent terpusat; mengirim pesan `BYE` di bawah `send_lock`, menunggu `close_event` agar jabat tangan selesai dengan anggun, menghapus referensi rahasia via `clear_secrets()`, menutup soket, dan mereset status sesi ke `IDLE` / `LISTENING`.
+- `alice_client.py` dan `bob_client.py` wajib memakai helper `close_session` untuk memastikan perilaku penutupan soket dan jabat tangan `BYE` seragam.
 
 ### Key Hygiene dan Logging
 
