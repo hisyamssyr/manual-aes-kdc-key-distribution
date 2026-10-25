@@ -33,7 +33,8 @@ from protocol import (
     new_nonce,
     open_ticket,
 )
-from session import BobSession, BobState
+from session import BobSession, BobState, run_session_receiver, send_app_message
+import ui
 
 
 MAX_KEY_PROMPT_ATTEMPTS = 3
@@ -162,22 +163,13 @@ class BobServer:
                 self.session.set_authenticated()
             self.logger.info("bob authenticated", extra={"event": "AUTH_OK", "peer": id_a})
 
-            while self.running and self.session.state == BobState.AUTHENTICATED:
-                try:
-                    active_msg = recv_message(sock, timeout=1.0)
-                    msg_type = active_msg.get("type")
-                    if msg_type in ("TICKET", "CHALLENGE", "CHALLENGE_RESP"):
-                        send_message(sock, build_error("BAD_STATE", "unexpected message"))
-                        self._reset_session()
-                        break
-                    elif msg_type == "BYE":
-                        self._reset_session()
-                        break
-                except (socket.timeout, NetworkTimeout):
-                    continue
-                except Exception:
-                    self._reset_session()
-                    break
+            run_session_receiver(
+                self.session,
+                self.config["peer_id"],
+                ui.print_incoming,
+                self._reset_session,
+                self.logger,
+            )
 
         except NetworkTimeout:
             try:
@@ -196,15 +188,20 @@ class BobServer:
 
     def change_key(self: "BobServer", new_kb: bytes) -> None:
         valid_key = validate_key(new_kb.decode("ascii"))
+        self.close_active_session()
         with self.lock:
-            if self.session.client_sock:
-                try:
-                    send_message(self.session.client_sock, build_bye())
-                except Exception:
-                    pass
-            self.session.reset_to_listening()
             self.kb = valid_key
         self.logger.info("kb updated", extra={"event": "KEY_CHANGE"})
+
+    def close_active_session(self: "BobServer") -> None:
+        with self.lock:
+            if self.session.client_sock:
+                with self.session.send_lock:
+                    try:
+                        send_message(self.session.client_sock, build_bye())
+                    except Exception:
+                        pass
+            self.session.reset_to_listening()
 
     def stop(self: "BobServer") -> None:
         self.running = False
@@ -212,13 +209,7 @@ class BobServer:
             close_socket(self.listener)
             self.listener = None
 
-        with self.lock:
-            if self.session.client_sock:
-                try:
-                    send_message(self.session.client_sock, build_bye())
-                except Exception:
-                    pass
-            self.session.reset_to_listening()
+        self.close_active_session()
 
         if self.accept_thread and self.accept_thread.is_alive():
             self.accept_thread.join(timeout=SHUTDOWN_TIMEOUT_SECONDS)
@@ -234,38 +225,76 @@ def prompt_kb() -> bytes:
             first = getpass.getpass("Master Key Bob (Kb) (16 karakter ASCII): ")
             confirm = getpass.getpass("Konfirmasi Master Key Bob (Kb): ")
             if first != confirm:
-                print("Key tidak cocok, silakan coba lagi.", file=sys.stderr)
+                ui.print_error("Key tidak cocok, silakan coba lagi.")
                 continue
             return validate_key(first)
         except ValueError as err:
-            print(f"Key tidak valid: {err}", file=sys.stderr)
-    print("Gagal memasukkan key setelah 3 percobaan.", file=sys.stderr)
+            ui.print_error(f"Key tidak valid: {err}")
+    ui.print_error("Gagal memasukkan key setelah 3 percobaan.")
     sys.exit(2)
 
 
 def run_interactive_menu(server: BobServer) -> None:
-    menu = "\n--- MENU BOB ---\n[1] Status Sesi & KCV\n[2] Ubah Kb\n[3] Log Aktivitas\n[0] Keluar\nPilih: "
+    menu = (
+        "\n=== MENU BOB ===\n"
+        "1. Lihat Status Sesi & KCV Ks\n"
+        "2. Kirim Pesan Aplikasi\n"
+        "3. Lihat Pesan Masuk\n"
+        "4. Ubah Key Kb\n"
+        "5. Tutup Sesi (BYE)\n"
+        "0. Keluar\n"
+        "Pilih: "
+    )
     while server.running:
         try:
-            choice = input(menu).strip()
+            choice = ui.prompt_input(menu).strip()
         except (EOFError, KeyboardInterrupt):
+            server.close_active_session()
             break
 
         if choice == "1":
-            with server.lock:
-                st = server.session.state.value
-                ks_kcv = compute_kcv(server.session.ks) if server.session.ks else "(belum ada)"
-                kb_kcv = compute_kcv(server.kb)
-            print(f"\nState Sesi: {st} | KCV Kb: {kb_kcv} | KCV Ks: {ks_kcv}")
+            kcv = compute_kcv(server.session.ks) if server.session.ks else "-"
+            ui.render_status("bob", server.config["id"], server.config["peer_id"], server.session.state.value, kcv, server.session.unread_count)
+
         elif choice == "2":
+            if server.session.state != BobState.AUTHENTICATED:
+                ui.print_error("Sesi belum terautentikasi. Tunggu koneksi dari Alice.")
+                continue
+            text = ui.prompt_input("Masukkan plaintext pesan: ")
+            try:
+                plain, ct = send_app_message(server.session, server.config["id"], text, server.logger)
+                ui.print_info(f"Pesan terkirim:\n  Plaintext : {plain}\n  Ciphertext: {ct}")
+            except ValueError as err:
+                ui.print_error(f"Pesan tidak valid: {err}")
+            except Exception as err:
+                ui.print_error(f"Gagal mengirim pesan: {err}")
+
+        elif choice == "3":
+            history = server.session.get_history()
+            if not history:
+                print("(Belum ada pesan)")
+            else:
+                print("\n=== RIWAYAT PESAN ===")
+                for item in history:
+                    print(f"[{item['from']}] {item['plaintext']}\n  Ciphertext: {item['ct']}")
+
+        elif choice == "4":
             new_kb = prompt_kb()
             server.change_key(new_kb)
-            print("Kb berhasil diperbarui. Sesi aktif diputus.")
-        elif choice == "3":
-            records = server.ring_buffer.records if server.ring_buffer else []
-            print("\n".join(records) if records else "(Belum ada log)")
+            ui.print_info("Kb berhasil diperbarui. Sesi aktif diputus.")
+
+        elif choice == "5":
+            if server.session.state == BobState.AUTHENTICATED:
+                server.close_active_session()
+                ui.print_info("Sesi ditutup (BYE dikirim).")
+            else:
+                ui.print_error("Tidak ada sesi aktif untuk ditutup.")
+
         elif choice == "0":
+            server.close_active_session()
             break
+        else:
+            ui.print_error("Pilihan menu tidak valid.")
 
     server.stop()
 
@@ -279,7 +308,7 @@ def main() -> None:
     try:
         config = load_config(args.config, "bob")
     except ConfigError as err:
-        print(f"Konfigurasi error: {err}", file=sys.stderr)
+        ui.print_error(f"Konfigurasi error: {err}")
         sys.exit(2)
 
     log_cfg = config.get("logging", {})

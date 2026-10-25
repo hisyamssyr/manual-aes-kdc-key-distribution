@@ -3,7 +3,8 @@ import getpass
 import logging
 import socket
 import sys
-from typing import Any
+import threading
+from typing import Any, Callable
 
 from app_logging import RingBufferHandler, capture_config_warnings, configure_logging, flush_config_warnings
 from config import ConfigError, load_config
@@ -20,7 +21,14 @@ from protocol import (
     open_challenge,
     open_kdc_response,
 )
-from session import AliceSession, AliceState, StateError
+from session import (
+    AliceSession,
+    AliceState,
+    StateError,
+    run_session_receiver,
+    send_app_message,
+)
+import ui
 
 
 MAX_KEY_PROMPT_ATTEMPTS = 3
@@ -77,6 +85,7 @@ def authenticate_with_bob(
     config: dict[str, Any],
     session: AliceSession,
     logger: logging.Logger | None = None,
+    on_message: Callable[[dict[str, str]], None] | None = None,
 ) -> socket.socket:
     if session.state != AliceState.KEY_READY or session.ticket is None or session.ks is None:
         raise StateError(f"cannot authenticate with bob from state: {session.state.value}")
@@ -115,6 +124,16 @@ def authenticate_with_bob(
         session.set_authenticated()
         if logger is not None:
             logger.info("authenticated with bob", extra={"event": "AUTH_OK"})
+
+        if on_message is not None:
+            thread = threading.Thread(
+                target=run_session_receiver,
+                args=(session, config["peer_id"], on_message, lambda: None, logger),
+                daemon=True,
+            )
+            session.receiver_thread = thread
+            thread.start()
+
         return sock
     except Exception:
         session.reset_to_idle()
@@ -124,18 +143,28 @@ def authenticate_with_bob(
         raise
 
 
+def close_alice_session(session: AliceSession, send_bye: bool = True) -> None:
+    if session.client_sock is not None and send_bye:
+        with session.send_lock:
+            try:
+                send_message(session.client_sock, build_bye())
+            except Exception:
+                pass
+    session.reset_to_idle()
+
+
 def prompt_ka() -> bytes:
     for _ in range(MAX_KEY_PROMPT_ATTEMPTS):
         try:
             first = getpass.getpass("Master Key Alice (Ka) (16 karakter ASCII): ")
             confirm = getpass.getpass("Konfirmasi Master Key Alice (Ka): ")
             if first != confirm:
-                print("Key tidak cocok, silakan coba lagi.", file=sys.stderr)
+                ui.print_error("Key tidak cocok, silakan coba lagi.")
                 continue
             return validate_key(first)
         except ValueError as err:
-            print(f"Key tidak valid: {err}", file=sys.stderr)
-    print("Gagal memasukkan key setelah 3 percobaan.", file=sys.stderr)
+            ui.print_error(f"Key tidak valid: {err}")
+    ui.print_error("Gagal memasukkan key setelah 3 percobaan.")
     sys.exit(2)
 
 
@@ -148,63 +177,88 @@ def run_interactive_menu(
 ) -> None:
     ka = initial_ka
     menu = (
-        "\n--- MENU ALICE ---\n"
-        "[1] Minta Ks ke KDC (Langkah 1-2)\n"
-        "[2] Autentikasi ke Bob (Langkah 3-5)\n"
-        "[3] Status Sesi & KCV\n"
-        "[4] Ubah Ka\n"
-        "[5] Log Aktivitas\n"
-        "[0] Keluar\n"
+        "\n=== MENU ALICE ===\n"
+        "1. Minta Session Key ke KDC (Langkah 1-2)\n"
+        "2. Hubungi Bob dan Autentikasi (Langkah 3-5)\n"
+        "3. Kirim Pesan Aplikasi\n"
+        "4. Lihat Pesan Masuk\n"
+        "5. Ubah Key Ka\n"
+        "6. Lihat Status Sesi & KCV Ks\n"
+        "7. Tutup Sesi (BYE)\n"
+        "0. Keluar\n"
         "Pilih: "
     )
 
     while True:
         try:
-            choice = input(menu).strip()
+            choice = ui.prompt_input(menu).strip()
         except (EOFError, KeyboardInterrupt):
+            close_alice_session(session, send_bye=True)
             break
 
         if choice == "1":
             try:
                 ks, _ = request_session_key(config, ka, session, logger)
-                print(f"Berhasil memperoleh Ks! State: {session.state.value} | KCV Ks: {compute_kcv(ks)}")
+                ui.print_info(f"Berhasil memperoleh Ks. State: {session.state.value} | KCV Ks: {compute_kcv(ks)}")
             except ProtocolError as err:
-                print(f"Protokol error KDC: {err.code}")
+                ui.print_error(f"Protokol error KDC: {err.code}")
             except Exception as err:
-                print(f"Gagal memperoleh session key: {err}")
+                ui.print_error(f"Gagal memperoleh session key: {err}")
+
         elif choice == "2":
             try:
-                authenticate_with_bob(config, session, logger)
-                print(f"Berhasil terautentikasi dengan Bob! State: {session.state.value}")
+                authenticate_with_bob(config, session, logger, ui.print_incoming)
+                ui.print_info(f"Berhasil terautentikasi dengan Bob. State: {session.state.value}")
             except ProtocolError as err:
-                print(f"Autentikasi ditolak Bob: {err.code}")
+                ui.print_error(f"Autentikasi ditolak Bob: {err.code}")
             except Exception as err:
-                print(f"Gagal autentikasi ke Bob: {err}")
+                ui.print_error(f"Gagal autentikasi ke Bob: {err}")
+
         elif choice == "3":
-            ks_kcv = compute_kcv(session.ks) if session.ks else "(belum ada)"
-            print(f"State: {session.state.value} | KCV Ka: {compute_kcv(ka)} | KCV Ks: {ks_kcv}")
+            if session.state != AliceState.AUTHENTICATED:
+                ui.print_error("Sesi belum terautentikasi. Jalankan langkah 1 dan 2 terlebih dahulu.")
+                continue
+            text = ui.prompt_input("Masukkan plaintext pesan: ")
+            try:
+                plain, ct = send_app_message(session, config["id"], text, logger)
+                ui.print_info(f"Pesan terkirim:\n  Plaintext : {plain}\n  Ciphertext: {ct}")
+            except ValueError as err:
+                ui.print_error(f"Pesan tidak valid: {err}")
+            except Exception as err:
+                ui.print_error(f"Gagal mengirim pesan: {err}")
+
         elif choice == "4":
+            history = session.get_history()
+            if not history:
+                print("(Belum ada pesan)")
+            else:
+                print("\n=== RIWAYAT PESAN ===")
+                for item in history:
+                    print(f"[{item['from']}] {item['plaintext']}\n  Ciphertext: {item['ct']}")
+
+        elif choice == "5":
             new_ka = prompt_ka()
             ka = new_ka
-            if session.client_sock:
-                try:
-                    send_message(session.client_sock, build_bye())
-                except Exception:
-                    pass
-            session.reset_to_idle()
+            close_alice_session(session, send_bye=True)
             logger.info("master key updated", extra={"event": "KEY_CHANGE"})
-            print("Ka berhasil diubah. Sesi direset ke IDLE.")
-        elif choice == "5":
-            records = ring_buffer.records
-            print("\n".join(records) if records else "(Belum ada log)")
+            ui.print_info("Ka berhasil diperbarui. Sesi direset ke IDLE.")
+
+        elif choice == "6":
+            kcv = compute_kcv(session.ks) if session.ks else "-"
+            ui.render_status("alice", config["id"], config["peer_id"], session.state.value, kcv, session.unread_count)
+
+        elif choice == "7":
+            if session.state == AliceState.AUTHENTICATED:
+                close_alice_session(session, send_bye=True)
+                ui.print_info("Sesi ditutup (BYE dikirim).")
+            else:
+                ui.print_error("Tidak ada sesi aktif untuk ditutup.")
+
         elif choice == "0":
-            if session.client_sock:
-                try:
-                    send_message(session.client_sock, build_bye())
-                except Exception:
-                    pass
-            session.reset_to_idle()
+            close_alice_session(session, send_bye=True)
             break
+        else:
+            ui.print_error("Pilihan menu tidak valid.")
 
 
 def main() -> None:
@@ -216,7 +270,7 @@ def main() -> None:
     try:
         config = load_config(args.config, "alice")
     except ConfigError as err:
-        print(f"Konfigurasi error: {err}", file=sys.stderr)
+        ui.print_error(f"Konfigurasi error: {err}")
         sys.exit(2)
 
     log_cfg = config.get("logging", {})
@@ -230,7 +284,7 @@ def main() -> None:
     try:
         run_interactive_menu(config, ka, session, logger, ring_buffer)
     except KeyboardInterrupt:
-        session.reset_to_idle()
+        close_alice_session(session, send_bye=True)
 
 
 if __name__ == "__main__":
