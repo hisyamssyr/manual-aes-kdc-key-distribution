@@ -27,6 +27,7 @@ from protocol import (
 )
 
 
+CLOSE_SESSION_TIMEOUT = 1.0
 MAX_HISTORY_ENTRIES = 100
 
 
@@ -59,10 +60,25 @@ BOB_ALLOWED_TRANSITIONS: dict[BobState, set[BobState]] = {
     BobState.CLOSED: {BobState.LISTENING},
 }
 
+ALICE_ALLOWED_TRANSITIONS: dict[AliceState, set[AliceState]] = {
+    AliceState.IDLE: {AliceState.REQUESTED},
+    AliceState.REQUESTED: {AliceState.KEY_READY, AliceState.IDLE},
+    AliceState.KEY_READY: {AliceState.TICKET_SENT, AliceState.REQUESTED, AliceState.IDLE},
+    AliceState.TICKET_SENT: {AliceState.AUTHENTICATED, AliceState.IDLE},
+    AliceState.AUTHENTICATED: {AliceState.CLOSED, AliceState.IDLE},
+    AliceState.CLOSED: {AliceState.IDLE},
+}
+
 
 def assert_bob_transition(current: BobState, target: BobState) -> None:
     if target not in BOB_ALLOWED_TRANSITIONS.get(current, set()):
         raise StateError(f"illegal transition: {current.value} -> {target.value}")
+
+
+def assert_alice_transition(current: AliceState, target: AliceState) -> None:
+    if target not in ALICE_ALLOWED_TRANSITIONS.get(current, set()):
+        raise StateError(f"illegal transition: {current.value} -> {target.value}")
+
 
 
 @dataclass
@@ -123,13 +139,19 @@ class AliceSession:
         self.unread_count = 0
         return list(self.message_history)
 
+    def clear_secrets(self: "AliceSession") -> None:
+        self.ks = None
+        self.ticket = None
+        self.last_n1 = None
+
     def reset_to_idle(self: "AliceSession") -> None:
         self.state = AliceState.IDLE
-        self.ks, self.ticket, self.last_n1 = None, None, None
+        self.clear_secrets()
         self.close_event.set()
         if self.client_sock is not None:
             close_socket(self.client_sock)
             self.client_sock = None
+
 
 
 @dataclass
@@ -180,14 +202,18 @@ class BobSession:
         self.unread_count = 0
         return list(self.message_history)
 
-    def reset_to_listening(self: "BobSession") -> None:
-        self.state = BobState.LISTENING
+    def clear_secrets(self: "BobSession") -> None:
         self.ks = None
         self.n2 = None
+
+    def reset_to_listening(self: "BobSession") -> None:
+        self.state = BobState.LISTENING
+        self.clear_secrets()
         self.close_event.set()
         if self.client_sock is not None:
             close_socket(self.client_sock)
             self.client_sock = None
+
 
 
 def send_app_message(
@@ -285,3 +311,22 @@ def run_session_receiver(
             session.close_event.set()
             on_close()
             break
+
+
+def close_session(
+    session: AliceSession | BobSession,
+    send_bye: bool = True,
+    timeout: float = CLOSE_SESSION_TIMEOUT,
+) -> None:
+    if send_bye and session.client_sock is not None:
+        with session.send_lock:
+            try:
+                send_message(session.client_sock, build_bye())
+            except Exception:
+                pass
+        session.close_event.wait(timeout=timeout)
+
+    if isinstance(session, AliceSession):
+        session.reset_to_idle()
+    else:
+        session.reset_to_listening()
