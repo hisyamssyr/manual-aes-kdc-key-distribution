@@ -147,8 +147,13 @@ class BobServer:
                 self._reset_session()
                 return
 
-            if not check_challenge_response(ks, n2, resp):
-                send_message(sock, build_auth_fail("BAD_RESPONSE"))
+            try:
+                if not check_challenge_response(ks, n2, resp):
+                    send_message(sock, build_auth_fail("BAD_RESPONSE"))
+                    self._reset_session()
+                    return
+            except Exception:
+                send_message(sock, build_auth_fail("BAD_FORMAT"))
                 self._reset_session()
                 return
 
@@ -156,6 +161,23 @@ class BobServer:
             with self.lock:
                 self.session.set_authenticated()
             self.logger.info("bob authenticated", extra={"event": "AUTH_OK", "peer": id_a})
+
+            while self.running and self.session.state == BobState.AUTHENTICATED:
+                try:
+                    active_msg = recv_message(sock, timeout=1.0)
+                    msg_type = active_msg.get("type")
+                    if msg_type in ("TICKET", "CHALLENGE", "CHALLENGE_RESP"):
+                        send_message(sock, build_error("BAD_STATE", "unexpected message"))
+                        self._reset_session()
+                        break
+                    elif msg_type == "BYE":
+                        self._reset_session()
+                        break
+                except (socket.timeout, NetworkTimeout):
+                    continue
+                except Exception:
+                    self._reset_session()
+                    break
 
         except NetworkTimeout:
             try:

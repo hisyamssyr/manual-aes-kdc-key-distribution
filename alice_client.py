@@ -1,6 +1,7 @@
 import argparse
 import getpass
 import logging
+import socket
 import sys
 from typing import Any
 
@@ -10,9 +11,13 @@ from encoding_utils import validate_key
 from network import NetworkError, close_socket, connect, recv_message, send_message
 from protocol import (
     ProtocolError,
+    build_bye,
+    build_challenge_response,
     build_kdc_request,
+    build_ticket,
     compute_kcv,
     new_nonce,
+    open_challenge,
     open_kdc_response,
 )
 from session import AliceSession, AliceState, StateError
@@ -68,6 +73,57 @@ def request_session_key(
             close_socket(sock)
 
 
+def authenticate_with_bob(
+    config: dict[str, Any],
+    session: AliceSession,
+    logger: logging.Logger | None = None,
+) -> socket.socket:
+    if session.state != AliceState.KEY_READY or session.ticket is None or session.ks is None:
+        raise StateError(f"cannot authenticate with bob from state: {session.state.value}")
+
+    connect_timeout = float(config.get("timeouts", {}).get("connect", 5.0))
+    step_timeout = float(config.get("timeouts", {}).get("step", 10.0))
+
+    try:
+        sock = connect(config["bob"]["host"], config["bob"]["port"], timeout=connect_timeout)
+    except Exception:
+        if logger is not None:
+            logger.warning("failed to connect to bob", extra={"event": "BOB_CONNECT_FAIL"})
+        raise
+
+    try:
+        send_message(sock, build_ticket(session.ticket))
+        session.set_ticket_sent(sock)
+
+        challenge = recv_message(sock, timeout=step_timeout)
+        if challenge.get("type") == "AUTH_FAIL":
+            raise ProtocolError(str(challenge.get("code", "BAD_FORMAT")), "bob rejected ticket")
+        if challenge.get("type") == "ERROR":
+            raise ProtocolError(str(challenge.get("code", "BAD_STATE")), "bob returned error")
+        if challenge.get("type") != "CHALLENGE":
+            raise ProtocolError("BAD_FORMAT", "expected CHALLENGE")
+
+        n2 = open_challenge(session.ks, challenge)
+        send_message(sock, build_challenge_response(session.ks, n2))
+
+        auth_resp = recv_message(sock, timeout=step_timeout)
+        if auth_resp.get("type") == "AUTH_FAIL":
+            raise ProtocolError(str(auth_resp.get("code", "BAD_RESPONSE")), "authentication failed")
+        if auth_resp.get("type") != "AUTH_OK":
+            raise ProtocolError("BAD_FORMAT", "expected AUTH_OK")
+
+        session.set_authenticated()
+        if logger is not None:
+            logger.info("authenticated with bob", extra={"event": "AUTH_OK"})
+        return sock
+    except Exception:
+        session.reset_to_idle()
+        close_socket(sock)
+        if logger is not None:
+            logger.warning("authentication with bob failed", extra={"event": "AUTH_FAIL"})
+        raise
+
+
 def prompt_ka() -> bytes:
     for _ in range(MAX_KEY_PROMPT_ATTEMPTS):
         try:
@@ -91,7 +147,16 @@ def run_interactive_menu(
     ring_buffer: RingBufferHandler,
 ) -> None:
     ka = initial_ka
-    menu = "\n--- MENU ALICE ---\n[1] Minta Ks ke KDC\n[2] Status Sesi & KCV\n[3] Ubah Ka\n[4] Log Aktivitas\n[0] Keluar\nPilih: "
+    menu = (
+        "\n--- MENU ALICE ---\n"
+        "[1] Minta Ks ke KDC (Langkah 1-2)\n"
+        "[2] Autentikasi ke Bob (Langkah 3-5)\n"
+        "[3] Status Sesi & KCV\n"
+        "[4] Ubah Ka\n"
+        "[5] Log Aktivitas\n"
+        "[0] Keluar\n"
+        "Pilih: "
+    )
 
     while True:
         try:
@@ -102,23 +167,43 @@ def run_interactive_menu(
         if choice == "1":
             try:
                 ks, _ = request_session_key(config, ka, session, logger)
-                print(f"Berhasil! State: {session.state.value} | KCV Ks: {compute_kcv(ks)}")
+                print(f"Berhasil memperoleh Ks! State: {session.state.value} | KCV Ks: {compute_kcv(ks)}")
             except ProtocolError as err:
-                print(f"Protokol error: {err.code}")
+                print(f"Protokol error KDC: {err.code}")
             except Exception as err:
                 print(f"Gagal memperoleh session key: {err}")
         elif choice == "2":
+            try:
+                authenticate_with_bob(config, session, logger)
+                print(f"Berhasil terautentikasi dengan Bob! State: {session.state.value}")
+            except ProtocolError as err:
+                print(f"Autentikasi ditolak Bob: {err.code}")
+            except Exception as err:
+                print(f"Gagal autentikasi ke Bob: {err}")
+        elif choice == "3":
             ks_kcv = compute_kcv(session.ks) if session.ks else "(belum ada)"
             print(f"State: {session.state.value} | KCV Ka: {compute_kcv(ka)} | KCV Ks: {ks_kcv}")
-        elif choice == "3":
-            ka = prompt_ka()
+        elif choice == "4":
+            new_ka = prompt_ka()
+            ka = new_ka
+            if session.client_sock:
+                try:
+                    send_message(session.client_sock, build_bye())
+                except Exception:
+                    pass
             session.reset_to_idle()
             logger.info("master key updated", extra={"event": "KEY_CHANGE"})
             print("Ka berhasil diubah. Sesi direset ke IDLE.")
-        elif choice == "4":
+        elif choice == "5":
             records = ring_buffer.records
             print("\n".join(records) if records else "(Belum ada log)")
         elif choice == "0":
+            if session.client_sock:
+                try:
+                    send_message(session.client_sock, build_bye())
+                except Exception:
+                    pass
+            session.reset_to_idle()
             break
 
 
@@ -145,7 +230,7 @@ def main() -> None:
     try:
         run_interactive_menu(config, ka, session, logger, ring_buffer)
     except KeyboardInterrupt:
-        pass
+        session.reset_to_idle()
 
 
 if __name__ == "__main__":
