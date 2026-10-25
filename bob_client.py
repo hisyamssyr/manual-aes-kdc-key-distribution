@@ -25,7 +25,6 @@ from protocol import (
     ProtocolError,
     build_auth_fail,
     build_auth_ok,
-    build_bye,
     build_challenge,
     build_error,
     check_challenge_response,
@@ -33,7 +32,7 @@ from protocol import (
     new_nonce,
     open_ticket,
 )
-from session import BobSession, BobState, run_session_receiver, send_app_message
+from session import BobSession, BobState, close_session, run_session_receiver, send_app_message
 import ui
 
 
@@ -194,14 +193,7 @@ class BobServer:
         self.logger.info("kb updated", extra={"event": "KEY_CHANGE"})
 
     def close_active_session(self: "BobServer") -> None:
-        with self.lock:
-            if self.session.client_sock:
-                with self.session.send_lock:
-                    try:
-                        send_message(self.session.client_sock, build_bye())
-                    except Exception:
-                        pass
-            self.session.reset_to_listening()
+        close_session(self.session, send_bye=True)
 
     def stop(self: "BobServer") -> None:
         self.running = False
@@ -209,7 +201,7 @@ class BobServer:
             close_socket(self.listener)
             self.listener = None
 
-        self.close_active_session()
+        close_session(self.session, send_bye=True)
 
         if self.accept_thread and self.accept_thread.is_alive():
             self.accept_thread.join(timeout=SHUTDOWN_TIMEOUT_SECONDS)
@@ -219,7 +211,7 @@ class BobServer:
         self.logger.info("bob server stopped", extra={"event": "SHUTDOWN"})
 
 
-def prompt_kb() -> bytes:
+def prompt_kb(exit_on_failure: bool = True) -> bytes | None:
     for _ in range(MAX_KEY_PROMPT_ATTEMPTS):
         try:
             first = getpass.getpass("Master Key Bob (Kb) (16 karakter ASCII): ")
@@ -230,8 +222,12 @@ def prompt_kb() -> bytes:
             return validate_key(first)
         except ValueError as err:
             ui.print_error(f"Key tidak valid: {err}")
-    ui.print_error("Gagal memasukkan key setelah 3 percobaan.")
-    sys.exit(2)
+    if exit_on_failure:
+        print("Gagal memasukkan key setelah 3 percobaan.", file=sys.stderr)
+        sys.exit(2)
+    ui.print_error("Gagal memasukkan key setelah 3 percobaan. Perubahan dibatalkan.")
+    return None
+
 
 
 def run_interactive_menu(server: BobServer) -> None:
@@ -279,9 +275,10 @@ def run_interactive_menu(server: BobServer) -> None:
                     print(f"[{item['from']}] {item['plaintext']}\n  Ciphertext: {item['ct']}")
 
         elif choice == "4":
-            new_kb = prompt_kb()
-            server.change_key(new_kb)
-            ui.print_info("Kb berhasil diperbarui. Sesi aktif diputus.")
+            new_kb = prompt_kb(exit_on_failure=False)
+            if new_kb is not None:
+                server.change_key(new_kb)
+                ui.print_info("Kb berhasil diperbarui. Sesi aktif diputus.")
 
         elif choice == "5":
             if server.session.state == BobState.AUTHENTICATED:
@@ -308,7 +305,7 @@ def main() -> None:
     try:
         config = load_config(args.config, "bob")
     except ConfigError as err:
-        ui.print_error(f"Konfigurasi error: {err}")
+        print(f"Konfigurasi error: {err}", file=sys.stderr)
         sys.exit(2)
 
     log_cfg = config.get("logging", {})
@@ -329,3 +326,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

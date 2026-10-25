@@ -209,7 +209,7 @@ class KDCServer:
         self.logger.info("kdc server stopped", extra={"event": "SHUTDOWN"})
 
 
-def prompt_key_for_id(identity: str) -> bytes:
+def prompt_key_for_id(identity: str, exit_on_failure: bool = True) -> bytes | None:
     for _ in range(MAX_KEY_PROMPT_ATTEMPTS):
         try:
             first = getpass.getpass(f"Key [{identity}] (16 karakter ASCII): ")
@@ -220,8 +220,12 @@ def prompt_key_for_id(identity: str) -> bytes:
             return validate_key(first)
         except ValueError as err:
             print(f"Key tidak valid: {err}", file=sys.stderr)
-    print("Gagal memasukkan key setelah 3 percobaan.", file=sys.stderr)
-    sys.exit(2)
+    if exit_on_failure:
+        print("Gagal memasukkan key setelah 3 percobaan.", file=sys.stderr)
+        sys.exit(2)
+    print("Gagal memasukkan key setelah 3 percobaan. Perubahan dibatalkan.", file=sys.stderr)
+    return None
+
 
 
 def run_interactive_menu(server: KDCServer) -> None:
@@ -242,9 +246,11 @@ def run_interactive_menu(server: KDCServer) -> None:
                 if target not in server.registry:
                     print(f"ID '{target}' tidak ditemukan di registry.")
                     continue
-            new_key = prompt_key_for_id(target)
-            server.change_key(target, new_key)
-            print(f"Key untuk '{target}' berhasil diubah.")
+            new_key = prompt_key_for_id(target, exit_on_failure=False)
+            if new_key is not None:
+                server.change_key(target, new_key)
+                print(f"Key untuk '{target}' berhasil diubah.")
+
         elif choice == "3":
             records = server.ring_buffer.records if server.ring_buffer else []
             print("\n".join(records) if records else "(Belum ada log)")

@@ -12,7 +12,6 @@ from encoding_utils import validate_key
 from network import NetworkError, close_socket, connect, recv_message, send_message
 from protocol import (
     ProtocolError,
-    build_bye,
     build_challenge_response,
     build_kdc_request,
     build_ticket,
@@ -25,6 +24,7 @@ from session import (
     AliceSession,
     AliceState,
     StateError,
+    close_session,
     run_session_receiver,
     send_app_message,
 )
@@ -144,16 +144,10 @@ def authenticate_with_bob(
 
 
 def close_alice_session(session: AliceSession, send_bye: bool = True) -> None:
-    if session.client_sock is not None and send_bye:
-        with session.send_lock:
-            try:
-                send_message(session.client_sock, build_bye())
-            except Exception:
-                pass
-    session.reset_to_idle()
+    close_session(session, send_bye=send_bye)
 
 
-def prompt_ka() -> bytes:
+def prompt_ka(exit_on_failure: bool = True) -> bytes | None:
     for _ in range(MAX_KEY_PROMPT_ATTEMPTS):
         try:
             first = getpass.getpass("Master Key Alice (Ka) (16 karakter ASCII): ")
@@ -164,8 +158,12 @@ def prompt_ka() -> bytes:
             return validate_key(first)
         except ValueError as err:
             ui.print_error(f"Key tidak valid: {err}")
-    ui.print_error("Gagal memasukkan key setelah 3 percobaan.")
-    sys.exit(2)
+    if exit_on_failure:
+        print("Gagal memasukkan key setelah 3 percobaan.", file=sys.stderr)
+        sys.exit(2)
+    ui.print_error("Gagal memasukkan key setelah 3 percobaan. Perubahan dibatalkan.")
+    return None
+
 
 
 def run_interactive_menu(
@@ -193,7 +191,7 @@ def run_interactive_menu(
         try:
             choice = ui.prompt_input(menu).strip()
         except (EOFError, KeyboardInterrupt):
-            close_alice_session(session, send_bye=True)
+            close_session(session, send_bye=True)
             break
 
         if choice == "1":
@@ -237,11 +235,12 @@ def run_interactive_menu(
                     print(f"[{item['from']}] {item['plaintext']}\n  Ciphertext: {item['ct']}")
 
         elif choice == "5":
-            new_ka = prompt_ka()
-            ka = new_ka
-            close_alice_session(session, send_bye=True)
-            logger.info("master key updated", extra={"event": "KEY_CHANGE"})
-            ui.print_info("Ka berhasil diperbarui. Sesi direset ke IDLE.")
+            new_ka = prompt_ka(exit_on_failure=False)
+            if new_ka is not None:
+                close_session(session, send_bye=True)
+                ka = new_ka
+                logger.info("master key updated", extra={"event": "KEY_CHANGE"})
+                ui.print_info("Ka berhasil diperbarui. Sesi direset ke IDLE.")
 
         elif choice == "6":
             kcv = compute_kcv(session.ks) if session.ks else "-"
@@ -249,16 +248,17 @@ def run_interactive_menu(
 
         elif choice == "7":
             if session.state == AliceState.AUTHENTICATED:
-                close_alice_session(session, send_bye=True)
+                close_session(session, send_bye=True)
                 ui.print_info("Sesi ditutup (BYE dikirim).")
             else:
                 ui.print_error("Tidak ada sesi aktif untuk ditutup.")
 
         elif choice == "0":
-            close_alice_session(session, send_bye=True)
+            close_session(session, send_bye=True)
             break
         else:
             ui.print_error("Pilihan menu tidak valid.")
+
 
 
 def main() -> None:
@@ -270,7 +270,7 @@ def main() -> None:
     try:
         config = load_config(args.config, "alice")
     except ConfigError as err:
-        ui.print_error(f"Konfigurasi error: {err}")
+        print(f"Konfigurasi error: {err}", file=sys.stderr)
         sys.exit(2)
 
     log_cfg = config.get("logging", {})
@@ -284,8 +284,9 @@ def main() -> None:
     try:
         run_interactive_menu(config, ka, session, logger, ring_buffer)
     except KeyboardInterrupt:
-        close_alice_session(session, send_bye=True)
+        close_session(session, send_bye=True)
 
 
 if __name__ == "__main__":
     main()
+
